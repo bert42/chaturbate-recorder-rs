@@ -42,6 +42,10 @@ pub async fn record_stream(
     let max_duration_secs = (config.max_duration_minutes as f64) * 60.0;
     let max_filesize_bytes = (config.max_filesize_mb as u64) * 1024 * 1024;
 
+    // Track consecutive failures to detect stream becoming unavailable
+    let mut consecutive_failures: u32 = 0;
+    const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
     tracing::info!(
         "Recording {} at {}p{}fps to {}",
         stream_info.room,
@@ -59,10 +63,28 @@ pub async fn record_stream(
 
         // Fetch media playlist
         let playlist_content = match client.get(&stream_info.hls_source).await {
-            Ok(content) => content,
+            Ok(content) => {
+                consecutive_failures = 0; // Reset on success
+                content
+            }
             Err(e) => {
-                tracing::warn!("Failed to fetch playlist for {}: {}", stream_info.room, e);
-                // Could be temporary network issue, wait and retry
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    tracing::info!(
+                        "Stream unavailable for {} after {} consecutive failures, stopping recording",
+                        stream_info.room,
+                        consecutive_failures
+                    );
+                    break;
+                }
+                if consecutive_failures == 1 {
+                    // Only log on first failure to avoid spam
+                    tracing::warn!(
+                        "Failed to fetch playlist for {}: {} (will retry)",
+                        stream_info.room,
+                        e
+                    );
+                }
                 tokio::time::sleep(poll_interval).await;
                 continue;
             }
@@ -72,11 +94,22 @@ pub async fn record_stream(
         let playlist = match m3u8_rs::parse_media_playlist_res(playlist_content.as_bytes()) {
             Ok(pl) => pl,
             Err(e) => {
-                tracing::warn!(
-                    "Failed to parse media playlist for {}: {:?}",
-                    stream_info.room,
-                    e
-                );
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    tracing::info!(
+                        "Stream unavailable for {} after {} consecutive failures, stopping recording",
+                        stream_info.room,
+                        consecutive_failures
+                    );
+                    break;
+                }
+                if consecutive_failures == 1 {
+                    tracing::warn!(
+                        "Failed to parse media playlist for {}: {:?}",
+                        stream_info.room,
+                        e
+                    );
+                }
                 tokio::time::sleep(poll_interval).await;
                 continue;
             }
