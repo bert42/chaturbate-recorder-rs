@@ -1,0 +1,49 @@
+# Chaturbate Stream Recorder Configuration
+# Copy this file to config.toml and customize as needed
+
+[recording]
+# Output directory for recordings
+output_directory = "./recordings"
+
+# Filename pattern using template variables:
+# {{.Username}} - Room/username
+# {{.Year}}, {{.Month}}, {{.Day}} - Date components
+# {{.Hour}}, {{.Minute}}, {{.Second}} - Time components
+# Sequence number is automatically appended for split files
+filename_pattern = "{{.Username}}_{{.Year}}-{{.Month}}-{{.Day}}_{{.Hour}}-{{.Minute}}-{{.Second}}"
+
+# Maximum recording duration in minutes (0 = unlimited)
+max_duration_minutes = 0
+
+# Maximum file size in MB (0 = unlimited)
+# When reached, recording splits to a new file
+max_filesize_mb = 0
+
+# Target video resolution (height in pixels)
+# Common values: 1080, 720, 480, 360
+resolution = 1080
+
+# Target framerate (30 or 60)
+framerate = 30
+
+[monitor]
+# Check interval in seconds for monitor mode
+# How often to check if rooms come online
+check_interval_seconds = 60
+
+# Rooms to monitor (used when no rooms specified via CLI)
+# Example: rooms = ["room1", "room2"]
+rooms = []
+
+[network]
+# Custom User-Agent string (optional)
+# user_agent = "Mozilla/5.0 ..."
+
+# Cookies for private streams (optional)
+# Format: semicolon-separated key=value pairs
+# Example: cookies = "sessionid=abc123; csrftoken=xyz789"
+# cookies = ""
+
+# Chaturbate domain (default: https://chaturbate.com/)
+# Can be changed for testing or alternate domains
+domain = "https://chaturbate.com/"
