@@ -16,7 +16,6 @@ use crate::stream::recorder::{record_stream, RecordingStats};
 pub enum RoomStatus {
     Unknown,
     Offline,
-    Online,
     Recording,
 }
 
