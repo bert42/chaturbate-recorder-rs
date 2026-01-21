@@ -1,9 +1,18 @@
 use clap::Parser;
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
+use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::EnvFilter;
 
 use chaturbate_recorder::api::ChaturbateClient;
+
+struct LocalTime;
+
+impl FormatTime for LocalTime {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"))
+    }
+}
 use chaturbate_recorder::cli::Args;
 use chaturbate_recorder::config::{validate_room_name, Config};
 use chaturbate_recorder::error::{Error, EXIT_SUCCESS};
@@ -26,6 +35,7 @@ async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_timer(LocalTime)
         .init();
 
     // Load and merge config
