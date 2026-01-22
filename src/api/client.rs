@@ -1,5 +1,6 @@
 use reqwest::{Client, RequestBuilder};
 use std::time::Duration;
+use tracing::debug;
 
 use crate::config::NetworkConfig;
 use crate::error::{Error, Result};
@@ -48,9 +49,12 @@ impl ChaturbateClient {
     }
 
     pub async fn get(&self, url: &str) -> Result<String> {
+        debug!("GET {}", url);
         let response = self.build_request(url).send().await?;
 
         let status = response.status();
+        debug!("Response status: {} for {}", status, url);
+
         if status == reqwest::StatusCode::FORBIDDEN {
             return Err(Error::PrivateStream);
         }
@@ -89,6 +93,7 @@ impl ChaturbateClient {
 
     pub async fn get_room_page(&self, room: &str) -> Result<String> {
         let url = format!("{}{}/", self.domain, room);
+        debug!("Fetching room page: {}", url);
         self.get(&url).await
     }
 
