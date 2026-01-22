@@ -62,6 +62,10 @@ impl ChaturbateClient {
 
     pub async fn get(&self, url: &str) -> Result<String> {
         debug!("GET {}", url);
+        debug!("User-Agent: {}", self.user_agent);
+        if let Some(ref cookies) = self.cookies {
+            debug!("Cookies: {}...", &cookies.chars().take(50).collect::<String>());
+        }
         let response = self.build_request(url).send().await?;
 
         let status = response.status();
