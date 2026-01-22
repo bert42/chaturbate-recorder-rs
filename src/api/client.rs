@@ -37,9 +37,21 @@ impl ChaturbateClient {
     fn build_request(&self, url: &str) -> RequestBuilder {
         let mut req = self.client.get(url);
 
+        // Browser-like headers to avoid Cloudflare blocks
+        req = req.header("User-Agent", &self.user_agent);
+        req = req.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
+        req = req.header("Accept-Language", "en-US,en;q=0.9");
+        req = req.header("Accept-Encoding", "gzip, deflate, br");
+        req = req.header("Sec-Ch-Ua", "\"Chromium\";v=\"120\", \"Not(A:Brand\";v=\"24\"");
+        req = req.header("Sec-Ch-Ua-Mobile", "?0");
+        req = req.header("Sec-Ch-Ua-Platform", "\"Windows\"");
+        req = req.header("Sec-Fetch-Dest", "document");
+        req = req.header("Sec-Fetch-Mode", "navigate");
+        req = req.header("Sec-Fetch-Site", "none");
+        req = req.header("Sec-Fetch-User", "?1");
+        req = req.header("Upgrade-Insecure-Requests", "1");
         // Required header to bypass age verification
         req = req.header("X-Requested-With", "XMLHttpRequest");
-        req = req.header("User-Agent", &self.user_agent);
 
         if let Some(ref cookies) = self.cookies {
             req = req.header("Cookie", cookies);
