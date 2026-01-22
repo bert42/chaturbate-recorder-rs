@@ -1,0 +1,16 @@
+version: "3"
+
+services:
+  chaturbate-recorder:
+    build:
+      context: .
+      containerfile: Containerfile
+    image: chaturbate-recorder:latest
+    container_name: chaturbate-recorder
+    restart: unless-stopped
+    volumes:
+      - ./recordings:/recordings:Z
+      - ./config.toml:/config/config.toml:ro,Z
+    environment:
+      - TZ=${TZ:-UTC}
+    command: ["--config", "/config/config.toml", "--monitor"]
