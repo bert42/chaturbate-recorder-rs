@@ -150,7 +150,29 @@ ffmpeg -i recording.ts -c copy recording.mp4
 
 | Variable | Description |
 |----------|-------------|
-| `CB_COOKIES` | Cookies for private streams |
+| `CB_COOKIES` | Cookies for authentication/Cloudflare bypass |
+
+## Cloudflare Bypass
+
+Chaturbate uses Cloudflare protection which may block automated requests. To work around this:
+
+1. **Set up a proxy** using [cloudflare-tinyproxy](https://github.com/yourusername/cloudflare-tinyproxy) on your server
+2. **Use a browser through the proxy** to pass Cloudflare's verification
+3. **Extract cookies** from the browser (DevTools → Application → Cookies → `cf_clearance`)
+4. **Configure the recorder** with the cookies and matching User-Agent:
+
+```toml
+[network]
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ..."  # Must match browser
+cookies = "cf_clearance=xxx; sessionid=yyy"
+```
+
+Or via CLI:
+```bash
+chaturbate-recorder -r room --user-agent "Mozilla/5.0 ..." --cookies "cf_clearance=xxx"
+```
+
+**Note:** The `cf_clearance` cookie is bound to both IP and User-Agent. Cookies expire after a few hours and need to be refreshed when you start getting 403 errors.
 
 ## Project Structure
 
