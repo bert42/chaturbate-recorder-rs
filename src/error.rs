@@ -11,13 +11,13 @@ pub enum Error {
     #[error("Stream URL not found for room: {0}")]
     StreamNotFound(String),
 
-    #[error("Cloudflare protection detected - try providing cookies or cf_clearance")]
+    #[error("Cloudflare blocked request - cookies expired or User-Agent mismatch. Refresh cf_clearance cookie.")]
     CloudflareBlocked,
 
     #[error("Age verification required")]
     AgeVerification,
 
-    #[error("Private stream - authentication required")]
+    #[error("Private stream - authentication required (need valid sessionid cookie)")]
     PrivateStream,
 
     #[error("Recording interrupted")]

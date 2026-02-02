@@ -71,7 +71,14 @@ impl ChaturbateClient {
         let status = response.status();
         debug!("Response status: {} for {}", status, url);
 
+        // Check for Cloudflare by looking for cf-ray header
+        let is_cloudflare = response.headers().get("cf-ray").is_some();
+
         if status == reqwest::StatusCode::FORBIDDEN {
+            if is_cloudflare {
+                debug!("Cloudflare 403 detected (cf-ray header present)");
+                return Err(Error::CloudflareBlocked);
+            }
             return Err(Error::PrivateStream);
         }
 
@@ -81,8 +88,8 @@ impl ChaturbateClient {
 
         let text = response.text().await?;
 
-        // Check for Cloudflare protection
-        if text.contains("<title>Just a moment...</title>") {
+        // Check for Cloudflare challenge page
+        if text.contains("<title>Just a moment...</title>") || text.contains("cf-challenge") {
             return Err(Error::CloudflareBlocked);
         }
 
