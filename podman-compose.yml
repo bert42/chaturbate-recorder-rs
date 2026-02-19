@@ -1,0 +1,16 @@
+version: "3"
+
+services:
+  chaturbate-recorder:
+    build:
+      context: .
+      containerfile: Containerfile
+    image: chaturbate-recorder:latest
+    container_name: chaturbate-recorder
+    restart: unless-stopped
+    volumes:
+      - /raid/private/bert/downloads/recordings:/recordings:Z
+      - ./config.toml:/config/config.toml:ro,Z
+    environment:
+      - TZ=${TZ:-UTC}
+    command: ["--config", "/config/config.toml", "--monitor", "--cookies", "cf_clearance=QBsZN7sPsxk8BND6bAC5_6DNJjkiFcCCiVVuxZU80yY-1771051451-1.2.1.1-zos1OhVQKl2T359wnxWiK9I8RCsqK6z4MJ41niGSvaV0HaXg2l91biwm9EMkoWx8XdUYJ5s1IMLcJ3FEFYtczMlYLcX3_eR2i3v5tCjBVOLUidRBnLQ4Nt9WbI2yq8JRL5AKzTIECSdjiJIEEyRdCCWx1KWJjIdJJ8v3AkF4PZEhl9yE1FNlmQYXISWg4xu35zYbg7XGPMHwhcoXCO2SPFlhL2HpFLJXwZT8DFLJFoNI8.XTiLPpglxTg7LtQ7Hj; sessionid=6cjksevnbr38uvzl5tm4g4yzy15u31lt", "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"]
