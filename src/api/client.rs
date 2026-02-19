@@ -86,6 +86,13 @@ impl ChaturbateClient {
             return Err(Error::RoomNotFound(url.to_string()));
         }
 
+        if status.is_server_error() {
+            return Err(Error::ServerError(
+                status.as_u16(),
+                format!("{} for {}", status.canonical_reason().unwrap_or("Unknown"), url),
+            ));
+        }
+
         let text = response.text().await?;
 
         // Check for Cloudflare challenge page

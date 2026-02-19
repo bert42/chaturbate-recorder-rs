@@ -20,6 +20,9 @@ pub enum Error {
     #[error("Private stream - authentication required (need valid sessionid cookie)")]
     PrivateStream,
 
+    #[error("Server error ({0}): {1}")]
+    ServerError(u16, String),
+
     #[error("Recording interrupted")]
     Interrupted,
 
@@ -72,7 +75,7 @@ impl Error {
             Error::Config(_) | Error::InvalidRoomName(_) | Error::NoRoomsSpecified => {
                 EXIT_CONFIG_ERROR
             }
-            Error::Network(_) | Error::CloudflareBlocked | Error::AgeVerification => {
+            Error::Network(_) | Error::CloudflareBlocked | Error::AgeVerification | Error::ServerError(_, _) => {
                 EXIT_NETWORK_ERROR
             }
             Error::Interrupted => EXIT_INTERRUPTED,
