@@ -265,7 +265,7 @@ impl RoomMonitor {
             // --- Global cookie death detection ---
             // If >50% of checked rooms return Private or Cloudflare, cookies are dead
             let auth_fail_count = private_count + cloudflare_count;
-            let was_cookie_dead = cookie_dead;
+            let _was_cookie_dead = cookie_dead;
 
             if checked_count > 0 && auth_fail_count > 0 && auth_fail_count * 2 >= checked_count {
                 if !cookie_dead {
@@ -401,7 +401,14 @@ impl RoomMonitor {
         });
 
         let client = reqwest::Client::new();
-        match client.post(&url).json(&payload).timeout(Duration::from_secs(10)).send().await {
+        let body = serde_json::to_string(&payload).unwrap_or_default();
+        match client.post(&url)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 tracing::debug!("Webhook sent successfully");
             }
