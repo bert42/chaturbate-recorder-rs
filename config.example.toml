@@ -35,6 +35,12 @@ check_interval_seconds = 60
 # Example: rooms = ["room1", "room2"]
 rooms = []
 
+# Webhook URL for notifications (cookie death, recovery)
+# Receives POST with JSON: {"text": "...", "source": "chaturbate-recorder", "timestamp": "..."}
+# Works with Telegram bots, Slack webhooks, ntfy.sh, etc.
+# Example: webhook_url = "https://ntfy.sh/my-recorder-alerts"
+# webhook_url = ""
+
 [network]
 # Custom User-Agent string (optional)
 # user_agent = "Mozilla/5.0 ..."

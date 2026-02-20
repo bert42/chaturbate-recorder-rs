@@ -35,6 +35,9 @@ pub struct MonitorConfig {
     pub check_interval_seconds: u64,
     #[serde(default)]
     pub rooms: Vec<String>,
+    /// Webhook URL for notifications (cookie death, recovery). POST with JSON body.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +102,7 @@ impl Default for MonitorConfig {
         Self {
             check_interval_seconds: default_check_interval(),
             rooms: Vec::new(),
+            webhook_url: None,
         }
     }
 }
