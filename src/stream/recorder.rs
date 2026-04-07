@@ -46,13 +46,16 @@ pub async fn record_stream(
     let mut consecutive_failures: u32 = 0;
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
-    tracing::info!(
+tracing::info!(
         "Recording {} at {}p{}fps to {}",
         stream_info.room,
         stream_info.resolution,
         stream_info.framerate,
         current_path.display()
     );
+
+    // DEBUG: Confirm we entered the loop
+    tracing::info!("Recording loop started for {}", stream_info.room);
 
     loop {
         // Check for cancellation
@@ -62,9 +65,11 @@ pub async fn record_stream(
         }
 
         // Fetch media playlist
+        tracing::info!("Fetching playlist: {}...", stream_info.hls_source.chars().take(100).collect::<String>());
         let playlist_content = match client.get(&stream_info.hls_source).await {
             Ok(content) => {
                 consecutive_failures = 0; // Reset on success
+                tracing::info!("Playlist fetch returned {} bytes for {}", content.len(), stream_info.room);
                 content
             }
             Err(e) => {
@@ -77,20 +82,19 @@ pub async fn record_stream(
                     );
                     break;
                 }
-                if consecutive_failures == 1 {
-                    // Only log on first failure to avoid spam
-                    tracing::warn!(
-                        "Failed to fetch playlist for {}: {} (will retry)",
-                        stream_info.room,
-                        e
-                    );
-                }
+                tracing::warn!(
+                    "Failed to fetch playlist for {}: {} (fail #{})",
+                    stream_info.room,
+                    e,
+                    consecutive_failures
+                );
                 tokio::time::sleep(poll_interval).await;
                 continue;
             }
         };
 
         // Parse media playlist
+tracing::info!("Parsing {} bytes as media playlist for {}", playlist_content.len(), stream_info.room);
         let playlist = match m3u8_rs::parse_media_playlist_res(playlist_content.as_bytes()) {
             Ok(pl) => pl,
             Err(e) => {
@@ -103,13 +107,12 @@ pub async fn record_stream(
                     );
                     break;
                 }
-                if consecutive_failures == 1 {
-                    tracing::warn!(
-                        "Failed to parse media playlist for {}: {:?}",
-                        stream_info.room,
-                        e
-                    );
-                }
+                tracing::warn!(
+                    "Failed to parse media playlist for {}: {:?} (fail #{})",
+                    stream_info.room,
+                    e,
+                    consecutive_failures
+                );
                 tokio::time::sleep(poll_interval).await;
                 continue;
             }
@@ -121,12 +124,45 @@ pub async fn record_stream(
             break;
         }
 
-        // Process segments
-        for segment in &playlist.segments {
-            if let Some(seq) = tracker.extract_sequence(&segment.uri) {
+        // Download fMP4 init segment (moov box) once per recording file
+        if stats.segments_downloaded == 0 {
+            let map_uri = playlist_content.lines()
+                .find(|l| l.starts_with("#EXT-X-MAP"))
+                .and_then(|l| l.split("URI=").nth(1))
+                .map(|s| s.trim_matches('"').to_string());
+
+            if let Some(init_uri) = map_uri {
+                match resolve_segment_url(&stream_info.hls_source, &init_uri) {
+                    Ok(init_url) => {
+                        match download_segment_with_retry(client, &init_url, 3).await {
+                            Ok(data) => {
+                                tracing::info!("Init segment: {} bytes for {}", data.len(), stream_info.room);
+                                output_file.write_all(&data).await?;
+                                stats.bytes_written += data.len() as u64;
+                            }
+                            Err(e) => tracing::warn!("Init segment failed for {}: {}", stream_info.room, e),
+                        }
+                    }
+                    Err(e) => tracing::warn!("Init URL resolve failed: {}", e),
+                }
+            }
+        }
+
+        // Parse segments from raw LL-HLS playlist text
+        let segment_uris: Vec<String> = playlist_content
+            .lines()
+            .filter(|line| {
+                let l = line.trim();
+                !l.is_empty() && !l.starts_with("#") && l.contains("/seg_") && l.contains(".m4s")
+            })
+            .map(|s| s.trim().to_string())
+            .collect();
+        for uri in &segment_uris {
+            tracing::info!("Processing segment URI: {}", uri.chars().take(80).collect::<String>());
+            if let Some(seq) = tracker.extract_sequence(uri) {
                 if tracker.is_new_segment(seq) {
                     // Download segment
-                    let segment_url = resolve_segment_url(&stream_info.hls_source, &segment.uri)?;
+                    let segment_url = resolve_segment_url(&stream_info.hls_source, uri)?;
 
                     match download_segment_with_retry(client, &segment_url, 3).await {
                         Ok(data) => {
@@ -134,7 +170,7 @@ pub async fn record_stream(
                             output_file.write_all(&data).await?;
 
                             let bytes = data.len() as u64;
-                            let duration = segment.duration as f64;
+                            let duration = 2.0;
                             file_size += bytes;
                             file_duration += duration;
                             stats.bytes_written += bytes;

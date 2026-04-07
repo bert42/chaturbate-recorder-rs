@@ -23,7 +23,7 @@ RUN cargo build --release
 # Runtime stage
 FROM registry.access.redhat.com/ubi9/ubi-minimal
 
-RUN microdnf install -y openssl && microdnf clean all
+RUN microdnf install -y openssl tzdata && microdnf clean all
 
 COPY --from=builder /app/target/release/chaturbate-recorder /usr/local/bin/
 

@@ -13,7 +13,7 @@ impl SegmentTracker {
     pub fn new() -> Result<Self> {
         Ok(Self {
             last_sequence: 0,
-            sequence_regex: Regex::new(r"_(\d+)\.ts$")?,
+            sequence_regex: Regex::new(r"_(\d+)_video_")?,
         })
     }
 
@@ -79,11 +79,11 @@ mod tests {
         let tracker = SegmentTracker::new().unwrap();
 
         assert_eq!(
-            tracker.extract_sequence("playlist_480p_123.ts"),
+            tracker.extract_sequence("seg_0_123_video_456_llhls.m3u8"),
             Some(123)
         );
         assert_eq!(
-            tracker.extract_sequence("chunklist_720p30fps_456.ts"),
+            tracker.extract_sequence("seg_0_456_video_789_llhls.m3u8"),
             Some(456)
         );
         assert_eq!(tracker.extract_sequence("invalid.m3u8"), None);
