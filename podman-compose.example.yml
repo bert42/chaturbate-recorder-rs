@@ -13,4 +13,8 @@ services:
       - ./config.toml:/config/config.toml:ro,Z
     environment:
       - TZ=${TZ:-UTC}
+      # Optional: proxy for video CDN requests only (see README "Video CDN Blocks")
+      # - CB_CDN_PROXY=http://proxy.example:3128
+      # Cookies can come from the environment instead of the command line:
+      # - CB_COOKIES=${CB_COOKIES}
     command: ["--config", "/config/config.toml", "--monitor"]

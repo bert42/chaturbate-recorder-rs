@@ -3,6 +3,8 @@
 
 # Config file with credentials
 config.toml
+# Local deployment (copy from podman-compose.example.yml; usually holds cookies)
+podman-compose.yml
 
 # Recordings
 /recordings/
