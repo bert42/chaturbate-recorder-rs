@@ -19,6 +19,8 @@ pub enum RoomStatus {
     Private,
     Recording,
     CookieDead,
+    /// Site answers fine but the video CDN refuses this client (likely an IP block).
+    CdnBlocked,
 }
 
 struct ActiveRecording {
@@ -42,6 +44,7 @@ enum RoomErrorKind {
     Private,
     ServerError,
     Cloudflare,
+    CdnForbidden,
     Other,
 }
 
@@ -245,6 +248,24 @@ impl RoomMonitor {
                             }
                         }
                     }
+                    Err(Error::CdnForbidden(ref host)) => {
+                        // Not counted toward cookie death: chaturbate.com answered fine, it is the
+                        // video CDN refusing this client.
+                        if !is_recording {
+                            let is_new = check_state.record_error(RoomErrorKind::CdnForbidden, self.check_interval);
+                            if is_new {
+                                console::print_error(&format!(
+                                    "{}: video CDN {} refused the stream (403) - this IP is likely blocked by the CDN, cookies are fine",
+                                    room, host
+                                ));
+                                self.send_webhook(&format!(
+                                    "📺 {}: video CDN {} refused the stream (403). Cookies are fine - the CDN is likely blocking this server's IP.",
+                                    room, host
+                                )).await;
+                            }
+                            self.set_status(room, RoomStatus::CdnBlocked).await;
+                        }
+                    }
                     Err(Error::ServerError(status, ref msg)) => {
                         if !is_recording {
                             let is_new = check_state.record_error(RoomErrorKind::ServerError, self.check_interval);
@@ -263,7 +284,8 @@ impl RoomMonitor {
             }
 
             // --- Global cookie death detection ---
-            // If >50% of checked rooms return Private or Cloudflare, cookies are dead
+            // If >50% of checked rooms return Private or Cloudflare, cookies are dead.
+            // CDN 403s are deliberately excluded (see Error::CdnForbidden).
             let auth_fail_count = private_count + cloudflare_count;
             let _was_cookie_dead = cookie_dead;
 

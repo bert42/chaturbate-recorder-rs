@@ -20,6 +20,11 @@ pub enum Error {
     #[error("Private stream - authentication required (need valid sessionid cookie)")]
     PrivateStream,
 
+    /// 403 from the video CDN (not chaturbate.com itself). The site and cookies are fine; the CDN
+    /// refuses this client, typically because the egress IP is a blocked datacenter address.
+    #[error("Video CDN refused the stream ({0}) - this IP is likely blocked by the CDN; cookies are not the problem")]
+    CdnForbidden(String),
+
     #[error("Server error ({0}): {1}")]
     ServerError(u16, String),
 
@@ -75,7 +80,11 @@ impl Error {
             Error::Config(_) | Error::InvalidRoomName(_) | Error::NoRoomsSpecified => {
                 EXIT_CONFIG_ERROR
             }
-            Error::Network(_) | Error::CloudflareBlocked | Error::AgeVerification | Error::ServerError(_, _) => {
+            Error::Network(_)
+            | Error::CloudflareBlocked
+            | Error::CdnForbidden(_)
+            | Error::AgeVerification
+            | Error::ServerError(_, _) => {
                 EXIT_NETWORK_ERROR
             }
             Error::Interrupted => EXIT_INTERRUPTED,

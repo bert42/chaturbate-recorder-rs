@@ -38,6 +38,11 @@ impl ChaturbateClient {
         })
     }
 
+    /// Whether `url` points at the configured site (e.g. chaturbate.com) rather than a CDN host.
+    fn is_site_url(&self, url: &str) -> bool {
+        is_same_site(&self.domain, url)
+    }
+
     fn build_request(&self, url: &str) -> RequestBuilder {
         let mut req = self.client.get(url);
 
@@ -91,6 +96,17 @@ impl ChaturbateClient {
         let is_cloudflare = response.headers().get("cf-ray").is_some();
 
         if status == reqwest::StatusCode::FORBIDDEN {
+            // A 403 from anywhere other than the site itself (e.g. *.live.mmcdn.com) is the video
+            // CDN refusing us, not an auth problem with chaturbate.com. Checked first so it never
+            // feeds the monitor's cookie-death detection.
+            if !self.is_site_url(url) {
+                let host = reqwest::Url::parse(url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_string))
+                    .unwrap_or_else(|| url.to_string());
+                debug!("CDN 403 from {}", host);
+                return Err(Error::CdnForbidden(host));
+            }
             if is_cloudflare {
                 debug!("Cloudflare 403 detected (cf-ray header present)");
                 return Err(Error::CloudflareBlocked);
@@ -156,5 +172,36 @@ impl Clone for ChaturbateClient {
             user_agent: self.user_agent.clone(),
             cookies: self.cookies.clone(),
         }
+    }
+}
+
+/// True when `url`'s host is the host of `domain` or one of its subdomains.
+fn is_same_site(domain: &str, url: &str) -> bool {
+    let host_of = |u: &str| {
+        reqwest::Url::parse(u)
+            .ok()
+            .and_then(|p| p.host_str().map(|h| h.trim_start_matches("www.").to_ascii_lowercase()))
+    };
+    match (host_of(domain), host_of(url)) {
+        (Some(site), Some(host)) => host == site || host.ends_with(&format!(".{}", site)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_same_site;
+
+    #[test]
+    fn site_vs_cdn_hosts() {
+        let d = "https://chaturbate.com/";
+        assert!(is_same_site(d, "https://chaturbate.com/someroom/"));
+        assert!(is_same_site(d, "https://www.chaturbate.com/api/x/"));
+        assert!(!is_same_site(
+            d,
+            "https://edge19-waw.live.mmcdn.com/v1/edge/streams/origin.x/llhls.m3u8?token=t"
+        ));
+        assert!(!is_same_site(d, "https://notchaturbate.com/"));
+        assert!(!is_same_site(d, "not a url"));
     }
 }
