@@ -37,6 +37,10 @@ pub struct Args {
     #[arg(long, value_name = "UA")]
     pub user_agent: Option<String>,
 
+    /// Proxy for video CDN requests only (e.g. http://host:port); site requests stay direct
+    #[arg(long, value_name = "URL", env = "CB_CDN_PROXY")]
+    pub cdn_proxy: Option<String>,
+
     /// Maximum recording duration in minutes (0 = unlimited)
     #[arg(long, value_name = "MINUTES")]
     pub max_duration: Option<u32>,
@@ -92,6 +96,11 @@ impl Args {
         // Override user agent
         if let Some(ref ua) = self.user_agent {
             config.network.user_agent = Some(ua.clone());
+        }
+
+        // Override CDN proxy
+        if let Some(ref proxy) = self.cdn_proxy {
+            config.network.cdn_proxy = Some(proxy.clone());
         }
 
         // Override max duration

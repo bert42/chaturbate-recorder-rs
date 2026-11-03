@@ -1,6 +1,6 @@
 use reqwest::{Client, RequestBuilder};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::config::NetworkConfig;
 use crate::error::{Error, Result};
@@ -16,14 +16,22 @@ pub struct ChaturbateClient {
 
 impl ChaturbateClient {
     pub fn new(config: &NetworkConfig) -> Result<Self> {
-        let client = Client::builder()
+        let domain = config.domain_with_trailing_slash();
+
+        let mut builder = Client::builder()
             // Cloudflare answers 403 to lowercase header names even with valid cookies. HTTP/2 always
             // sends them lowercase, so this needs HTTP/1.1 with capitalized names.
             .http1_only()
             .http1_title_case_headers()
             .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
-            .build()?;
+            .connect_timeout(Duration::from_secs(10));
+
+        if let Some(proxy) = config.cdn_proxy.as_deref().filter(|p| !p.trim().is_empty()) {
+            builder = builder.proxy(cdn_proxy(&domain, proxy)?);
+            info!("Video CDN requests go through proxy {}", redact_proxy(proxy));
+        }
+
+        let client = builder.build()?;
 
         let user_agent = config
             .user_agent
@@ -32,7 +40,7 @@ impl ChaturbateClient {
 
         Ok(Self {
             client,
-            domain: config.domain_with_trailing_slash(),
+            domain,
             user_agent,
             cookies: config.cookies.clone(),
         })
@@ -175,6 +183,39 @@ impl Clone for ChaturbateClient {
     }
 }
 
+/// Proxy that applies to every request except those to the site itself.
+fn cdn_proxy(domain: &str, proxy: &str) -> Result<reqwest::Proxy> {
+    let proxy_url = reqwest::Url::parse(proxy)
+        .map_err(|e| Error::Config(format!("invalid cdn_proxy URL {:?}: {}", redact_proxy(proxy), e)))?;
+    if !matches!(proxy_url.scheme(), "http" | "https") {
+        return Err(Error::Config(format!(
+            "cdn_proxy must be an http:// or https:// URL, got {}://",
+            proxy_url.scheme()
+        )));
+    }
+    let site = domain.to_string();
+    Ok(reqwest::Proxy::custom(move |url| {
+        if is_same_site(&site, url.as_str()) {
+            None
+        } else {
+            Some(proxy_url.clone())
+        }
+    }))
+}
+
+/// Proxy URL with any user:password replaced, for logs and errors.
+fn redact_proxy(proxy: &str) -> String {
+    match reqwest::Url::parse(proxy) {
+        Ok(mut u) if !u.username().is_empty() || u.password().is_some() => {
+            let _ = u.set_username("***");
+            let _ = u.set_password(None);
+            u.to_string()
+        }
+        Ok(u) => u.to_string(),
+        Err(_) => "<unparseable>".to_string(),
+    }
+}
+
 /// True when `url`'s host is the host of `domain` or one of its subdomains.
 fn is_same_site(domain: &str, url: &str) -> bool {
     let host_of = |u: &str| {
@@ -190,7 +231,7 @@ fn is_same_site(domain: &str, url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_same_site;
+    use super::{cdn_proxy, is_same_site, redact_proxy};
 
     #[test]
     fn site_vs_cdn_hosts() {
@@ -203,5 +244,19 @@ mod tests {
         ));
         assert!(!is_same_site(d, "https://notchaturbate.com/"));
         assert!(!is_same_site(d, "not a url"));
+    }
+
+    #[test]
+    fn cdn_proxy_validation() {
+        let d = "https://chaturbate.com/";
+        assert!(cdn_proxy(d, "http://proxy.example:3128").is_ok());
+        assert!(cdn_proxy(d, "not a url").is_err());
+        assert!(cdn_proxy(d, "ftp://proxy.example:21").is_err());
+    }
+
+    #[test]
+    fn proxy_credentials_are_redacted() {
+        let r = redact_proxy("http://user:secret@proxy.example:3128");
+        assert!(!r.contains("secret") && !r.contains("user"), "{}", r);
     }
 }

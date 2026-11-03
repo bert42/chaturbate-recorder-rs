@@ -48,6 +48,11 @@ pub struct NetworkConfig {
     pub cookies: Option<String>,
     #[serde(default = "default_domain")]
     pub domain: String,
+    /// Proxy for every request that is not to `domain` (i.e. the video CDN).
+    /// For hosts whose IP the CDN refuses while the site itself works; site
+    /// requests stay direct so IP-bound cookies like cf_clearance keep working.
+    #[serde(default)]
+    pub cdn_proxy: Option<String>,
 }
 
 fn default_output_directory() -> String {
@@ -113,6 +118,7 @@ impl Default for NetworkConfig {
             user_agent: None,
             cookies: None,
             domain: default_domain(),
+            cdn_proxy: None,
         }
     }
 }

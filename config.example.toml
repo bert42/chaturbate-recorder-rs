@@ -53,3 +53,10 @@ rooms = []
 # Chaturbate domain (default: https://chaturbate.com/)
 # Can be changed for testing or alternate domains
 domain = "https://chaturbate.com/"
+
+# Proxy for video CDN requests only (optional). Use this when the recorder logs
+# "video CDN ... refused the stream (403)": some CDN edges refuse datacenter IPs
+# while the site itself works. Requests to `domain` stay direct, so IP-bound
+# cookies (cf_clearance) keep working. Needs CONNECT to port 443; the CDN hosts
+# are *.mmcdn.com. Also settable with --cdn-proxy or CB_CDN_PROXY.
+# cdn_proxy = "http://proxy.example:3128"
