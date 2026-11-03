@@ -17,6 +17,10 @@ pub struct ChaturbateClient {
 impl ChaturbateClient {
     pub fn new(config: &NetworkConfig) -> Result<Self> {
         let client = Client::builder()
+            // Cloudflare answers 403 to lowercase header names even with valid cookies. HTTP/2 always
+            // sends them lowercase, so this needs HTTP/1.1 with capitalized names.
+            .http1_only()
+            .http1_title_case_headers()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .build()?;
@@ -36,6 +40,18 @@ impl ChaturbateClient {
 
     fn build_request(&self, url: &str) -> RequestBuilder {
         let mut req = self.client.get(url);
+
+        // Cloudflare answers 403 when Host comes last, which is where hyper puts it by default.
+        // Setting it here makes it the first header sent.
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if let Some(host) = parsed.host_str() {
+                let host_value = match parsed.port() {
+                    Some(port) => format!("{}:{}", host, port),
+                    None => host.to_string(),
+                };
+                req = req.header("Host", host_value);
+            }
+        }
 
         // Browser-like headers to avoid Cloudflare blocks
         req = req.header("User-Agent", &self.user_agent);
