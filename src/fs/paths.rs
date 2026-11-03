@@ -29,7 +29,7 @@ pub fn generate_output_path(
     };
 
     // Add .ts extension
-    let filename = format!("{}.ts", filename);
+    let filename = format!("{}.mp4", filename);
 
     let path = PathBuf::from(output_dir).join(filename);
 
@@ -50,7 +50,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(path.to_string_lossy().contains("testroom_test.ts"));
+        assert!(path.to_string_lossy().contains("testroom_test.mp4"));
     }
 
     #[test]
@@ -63,6 +63,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(path.to_string_lossy().contains("testroom_test_5.ts"));
+        assert!(path.to_string_lossy().contains("testroom_test_5.mp4"));
     }
 }
