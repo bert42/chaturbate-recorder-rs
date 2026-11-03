@@ -122,6 +122,7 @@ rooms = ["room1", "room2"]  # Rooms to monitor
 # user_agent = "Custom User-Agent"
 # cookies = "sessionid=abc123"  # For private streams
 domain = "https://chaturbate.com/"
+# cdn_proxy = "http://proxy.example:3128"  # See "Video CDN Blocks" below
 ```
 
 ### Filename Pattern Variables
@@ -138,12 +139,12 @@ domain = "https://chaturbate.com/"
 
 ## Output Format
 
-Recordings are saved as `.ts` (MPEG Transport Stream) files, which:
-- Play directly in VLC, mpv, and most media players
-- Can be converted to MP4 without re-encoding:
+Streams are LL-HLS with fMP4 segments. Recordings are saved as fragmented `.mp4` files
+(init segment followed by the media fragments), which play directly in VLC, mpv and most
+media players. To get a regular (non-fragmented) MP4 without re-encoding:
 
 ```bash
-ffmpeg -i recording.ts -c copy recording.mp4
+ffmpeg -i recording.mp4 -c copy -movflags +faststart remuxed.mp4
 ```
 
 ## Environment Variables
@@ -151,6 +152,7 @@ ffmpeg -i recording.ts -c copy recording.mp4
 | Variable | Description |
 |----------|-------------|
 | `CB_COOKIES` | Cookies for authentication/Cloudflare bypass |
+| `CB_CDN_PROXY` | Proxy for video CDN requests only (same as `--cdn-proxy`) |
 
 ## Cloudflare Bypass
 
@@ -173,6 +175,36 @@ chaturbate-recorder -r room --user-agent "Mozilla/5.0 ..." --cookies "cf_clearan
 ```
 
 **Note:** The `cf_clearance` cookie is bound to both IP and User-Agent. Cookies expire after a few hours and need to be refreshed when you start getting 403 errors.
+
+## Video CDN Blocks
+
+The video itself comes from a separate CDN (`*.live.mmcdn.com`), and some of its edges answer
+**403 to datacenter IPs** even when the site, the cookies and the stream token are all fine.
+The recorder reports this as:
+
+```
+room: video CDN edge30-waw.live.mmcdn.com refused the stream (403) - this IP is likely blocked by the CDN, cookies are fine
+```
+
+(It is deliberately not counted as cookie death.) To check whether a host's IP is accepted:
+
+```bash
+scripts/cdn-probe.sh -r <live_room> local other-host   # "local" = this machine, others via ssh
+```
+
+`edge_root=200` means the CDN accepts that IP; `403` means it is blocked.
+
+Fix: send only the CDN traffic through an HTTP proxy on an IP the CDN accepts. Site
+requests stay direct, so an IP-bound `cf_clearance` keeps working (stream tokens are not
+tied to the requesting IP):
+
+```toml
+[network]
+cdn_proxy = "http://proxy.example:3128"
+```
+
+Or `--cdn-proxy URL` / `CB_CDN_PROXY`. The proxy needs to allow `CONNECT` to port 443; it is
+good practice to restrict it to `*.mmcdn.com` and to your recorder's IP.
 
 ## Project Structure
 
