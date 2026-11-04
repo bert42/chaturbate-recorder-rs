@@ -12,6 +12,28 @@ use crate::output::console;
 use crate::stream::discovery::get_stream_info;
 use crate::stream::recorder::{record_stream, RecordingStats};
 
+/// Consecutive bad check cycles before cookies are declared dead (and a webhook is sent).
+const COOKIE_DEATH_CYCLES: u32 = 3;
+/// Pause between room checks within one cycle.
+const ROOM_SPACING_MIN: Duration = Duration::from_secs(2);
+const ROOM_SPACING_MAX: Duration = Duration::from_secs(6);
+/// Pause before retrying a Cloudflare-blocked check.
+const CF_RETRY_MIN: Duration = Duration::from_secs(3);
+const CF_RETRY_MAX: Duration = Duration::from_secs(8);
+
+/// Random-ish duration in [min, max), from the clock's sub-second nanos (no rand dependency).
+fn jitter(min: Duration, max: Duration) -> Duration {
+    let span = max.saturating_sub(min).as_millis() as u64;
+    if span == 0 {
+        return min;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    min + Duration::from_millis(nanos % span)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RoomStatus {
     Unknown,
@@ -127,6 +149,9 @@ impl RoomMonitor {
         let mut check_states: HashMap<String, RoomCheckState> = HashMap::new();
         let mut cookie_dead = false;
         let mut cookie_dead_alerted = false;
+        // Consecutive cycles in which most checked rooms failed auth. Cloudflare challenges
+        // single requests at random, so one bad cycle is not evidence of dead cookies.
+        let mut bad_cycles: u32 = 0;
 
         for room in &self.rooms {
             check_states.insert(room.clone(), RoomCheckState::new());
@@ -185,6 +210,11 @@ impl RoomMonitor {
                 // Skip rooms in backoff (unless cookie was just fixed)
                 if !cookie_dead && check_state.should_skip() {
                     continue;
+                }
+
+                // Spread checks out instead of bursting all rooms within a second
+                if checked_count > 0 {
+                    tokio::time::sleep(jitter(ROOM_SPACING_MIN, ROOM_SPACING_MAX)).await;
                 }
 
                 checked_count += 1;
@@ -289,14 +319,31 @@ impl RoomMonitor {
             let auth_fail_count = private_count + cloudflare_count;
             let _was_cookie_dead = cookie_dead;
 
-            if checked_count > 0 && auth_fail_count > 0 && auth_fail_count * 2 >= checked_count {
+            let bad_cycle =
+                checked_count > 0 && auth_fail_count > 0 && auth_fail_count * 2 >= checked_count;
+            if bad_cycle {
+                bad_cycles += 1;
+                if bad_cycles < COOKIE_DEATH_CYCLES {
+                    tracing::debug!(
+                        "{}/{} rooms failed auth (bad cycle {}/{})",
+                        auth_fail_count,
+                        checked_count,
+                        bad_cycles,
+                        COOKIE_DEATH_CYCLES
+                    );
+                }
+            } else if checked_count > 0 {
+                bad_cycles = 0;
+            }
+
+            if bad_cycle && bad_cycles >= COOKIE_DEATH_CYCLES {
                 if !cookie_dead {
                     cookie_dead = true;
                     cookie_dead_alerted = false;
 
                     console::print_error(&format!(
-                        "🍪 COOKIE DEATH DETECTED — {}/{} rooms returning private/cloudflare. All checks paused with backoff.",
-                        auth_fail_count, checked_count
+                        "🍪 COOKIE DEATH DETECTED — {}/{} rooms returning private/cloudflare for {} consecutive checks.",
+                        auth_fail_count, checked_count, bad_cycles
                     ));
 
                     // Set all non-recording rooms to CookieDead
@@ -314,11 +361,14 @@ impl RoomMonitor {
                 }
             } else if cookie_dead && auth_fail_count == 0 && checked_count > 0 {
                 // Cookie is working again!
+                let was_alerted = cookie_dead_alerted;
                 cookie_dead = false;
                 cookie_dead_alerted = false;
 
                 console::print_success("🍪 Cookie recovered! Rooms responding normally again.");
-                self.send_webhook("🍪 Cookie recovered! Recorder is back to normal.").await;
+                if was_alerted {
+                    self.send_webhook("🍪 Cookie recovered! Recorder is back to normal.").await;
+                }
 
                 // Reset all backoff states so rooms get checked immediately
                 for state in check_states.values_mut() {
@@ -366,17 +416,26 @@ impl RoomMonitor {
         Ok(())
     }
 
-    async fn check_room(
-        &self,
-        room: &str,
-    ) -> Result<crate::stream::StreamInfo> {
-        get_stream_info(
-            &self.client,
-            room,
-            self.recording_config.resolution,
-            self.recording_config.framerate,
-        )
-        .await
+    /// Check a room. A Cloudflare block is retried once after a short pause: Cloudflare
+    /// challenges individual requests at random even with valid cookies, and only a block
+    /// that repeats says anything about the cookies.
+    async fn check_room(&self, room: &str) -> Result<crate::stream::StreamInfo> {
+        let check = || {
+            get_stream_info(
+                &self.client,
+                room,
+                self.recording_config.resolution,
+                self.recording_config.framerate,
+            )
+        };
+        match check().await {
+            Err(Error::CloudflareBlocked) => {
+                tracing::debug!("{}: Cloudflare blocked, retrying once", room);
+                tokio::time::sleep(jitter(CF_RETRY_MIN, CF_RETRY_MAX)).await;
+                check().await
+            }
+            other => other,
+        }
     }
 
     fn spawn_recording(
@@ -441,5 +500,19 @@ impl RoomMonitor {
                 tracing::warn!("Webhook failed: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jitter_stays_in_range() {
+        for _ in 0..1000 {
+            let d = jitter(Duration::from_secs(2), Duration::from_secs(6));
+            assert!(d >= Duration::from_secs(2) && d < Duration::from_secs(6), "{:?}", d);
+        }
+        assert_eq!(jitter(Duration::from_secs(3), Duration::from_secs(3)), Duration::from_secs(3));
     }
 }

@@ -116,7 +116,15 @@ impl ChaturbateClient {
                 return Err(Error::CdnForbidden(host));
             }
             if is_cloudflare {
-                debug!("Cloudflare 403 detected (cf-ray header present)");
+                debug!(
+                    "Cloudflare 403 for {} (cf-mitigated: {})",
+                    url,
+                    response
+                        .headers()
+                        .get("cf-mitigated")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("none")
+                );
                 return Err(Error::CloudflareBlocked);
             }
             return Err(Error::PrivateStream);
