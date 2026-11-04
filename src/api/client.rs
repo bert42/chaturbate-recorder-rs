@@ -1,4 +1,6 @@
+use reqwest::cookie::{CookieStore, Jar};
 use reqwest::{Client, RequestBuilder};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
 
@@ -11,7 +13,12 @@ pub struct ChaturbateClient {
     client: Client,
     domain: String,
     user_agent: String,
-    cookies: Option<String>,
+    /// Cookie jar shared by all clones. Seeded from the configured cookie string and
+    /// updated from Set-Cookie, like a browser: Cloudflare refreshes __cf_bm (and
+    /// sometimes cf_clearance) on every response, and resending a stale copy raises the
+    /// bot score. The jar also scopes cookies to their domain, so the site's session
+    /// cookies are no longer sent to the video CDN.
+    jar: Arc<Jar>,
 }
 
 impl ChaturbateClient {
@@ -25,6 +32,13 @@ impl ChaturbateClient {
             .http1_title_case_headers()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10));
+
+        let jar = Arc::new(Jar::default());
+        if let Some(cookies) = config.cookies.as_deref() {
+            let seeded = seed_cookie_jar(&jar, &domain, cookies)?;
+            debug!("Seeded {} cookie(s) for {}", seeded, domain);
+        }
+        builder = builder.cookie_provider(Arc::clone(&jar));
 
         if let Some(proxy) = config.cdn_proxy.as_deref().filter(|p| !p.trim().is_empty()) {
             builder = builder.proxy(cdn_proxy(&domain, proxy)?);
@@ -42,7 +56,7 @@ impl ChaturbateClient {
             client,
             domain,
             user_agent,
-            cookies: config.cookies.clone(),
+            jar,
         })
     }
 
@@ -82,18 +96,15 @@ impl ChaturbateClient {
         // Required header to bypass age verification
         req = req.header("X-Requested-With", "XMLHttpRequest");
 
-        if let Some(ref cookies) = self.cookies {
-            req = req.header("Cookie", cookies);
-        }
-
+        // Cookies come from the jar (cookie_provider), scoped to each request's domain.
         req
     }
 
     pub async fn get(&self, url: &str) -> Result<String> {
         debug!("GET {}", url);
         debug!("User-Agent: {}", self.user_agent);
-        if let Some(ref cookies) = self.cookies {
-            debug!("Cookies: {}...", &cookies.chars().take(50).collect::<String>());
+        if let Some(names) = self.cookie_names_for(url) {
+            debug!("Cookies sent: {}", names);
         }
         let response = self.build_request(url).send().await?;
 
@@ -178,6 +189,20 @@ impl ChaturbateClient {
     pub fn domain(&self) -> &str {
         &self.domain
     }
+
+    /// Names (not values) of the cookies the jar would send to `url`, for debug logs.
+    fn cookie_names_for(&self, url: &str) -> Option<String> {
+        let url = reqwest::Url::parse(url).ok()?;
+        let header = self.jar.cookies(&url)?;
+        let names: Vec<&str> = header
+            .to_str()
+            .ok()?
+            .split(';')
+            .filter_map(|c| c.trim().split('=').next())
+            .filter(|n| !n.is_empty())
+            .collect();
+        Some(names.join(","))
+    }
 }
 
 impl Clone for ChaturbateClient {
@@ -186,9 +211,39 @@ impl Clone for ChaturbateClient {
             client: self.client.clone(),
             domain: self.domain.clone(),
             user_agent: self.user_agent.clone(),
-            cookies: self.cookies.clone(),
+            jar: Arc::clone(&self.jar),
         }
     }
+}
+
+/// Add a "k1=v1; k2=v2" cookie string to the jar for the site. Each cookie gets
+/// `Domain=<site host>; Path=/`, matching what Cloudflare and the site set, so a later
+/// Set-Cookie for the same name replaces it instead of adding a second copy. Hosts that
+/// are IP addresses (tests, local setups) get host-only cookies. Returns how many were added.
+fn seed_cookie_jar(jar: &Jar, domain: &str, cookies: &str) -> Result<usize> {
+    let url = reqwest::Url::parse(domain)
+        .map_err(|e| Error::Config(format!("invalid domain {:?}: {}", domain, e)))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::Config(format!("domain has no host: {}", domain)))?;
+    let domain_attr = if host.parse::<std::net::IpAddr>().is_ok() {
+        String::new()
+    } else {
+        format!("; Domain={}", host.trim_start_matches("www."))
+    };
+
+    let mut added = 0;
+    for pair in cookies.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        if !pair.contains('=') {
+            return Err(Error::Config(format!(
+                "malformed cookie {:?}: expected name=value pairs separated by ';'",
+                pair.chars().take(20).collect::<String>()
+            )));
+        }
+        jar.add_cookie_str(&format!("{}{}; Path=/", pair, domain_attr), &url);
+        added += 1;
+    }
+    Ok(added)
 }
 
 /// Proxy that applies to every request except those to the site itself.
@@ -239,7 +294,17 @@ fn is_same_site(domain: &str, url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cdn_proxy, is_same_site, redact_proxy};
+    use super::{cdn_proxy, is_same_site, redact_proxy, seed_cookie_jar, ChaturbateClient};
+    use crate::config::NetworkConfig;
+    use reqwest::cookie::{CookieStore, Jar};
+    use reqwest::header::HeaderValue;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn cookie_header(jar: &Jar, url: &str) -> String {
+        jar.cookies(&reqwest::Url::parse(url).unwrap())
+            .map(|h| h.to_str().unwrap().to_string())
+            .unwrap_or_default()
+    }
 
     #[test]
     fn site_vs_cdn_hosts() {
@@ -266,5 +331,80 @@ mod tests {
     fn proxy_credentials_are_redacted() {
         let r = redact_proxy("http://user:secret@proxy.example:3128");
         assert!(!r.contains("secret") && !r.contains("user"), "{}", r);
+    }
+
+    #[test]
+    fn seeded_cookies_go_to_site_only() {
+        let jar = Jar::default();
+        let n = seed_cookie_jar(&jar, "https://chaturbate.com/", "sessionid=s1; cf_clearance=c1; affkey=\"a=b\"").unwrap();
+        assert_eq!(n, 3);
+        let site = cookie_header(&jar, "https://chaturbate.com/room/");
+        assert!(site.contains("sessionid=s1") && site.contains("cf_clearance=c1"), "{}", site);
+        assert!(cookie_header(&jar, "https://www.chaturbate.com/").contains("sessionid=s1"));
+        assert_eq!(cookie_header(&jar, "https://edge1-waw.live.mmcdn.com/x.m3u8"), "");
+    }
+
+    #[test]
+    fn set_cookie_replaces_seeded_value() {
+        let jar = Jar::default();
+        seed_cookie_jar(&jar, "https://chaturbate.com/", "__cf_bm=old; sessionid=s1").unwrap();
+        let url = reqwest::Url::parse("https://chaturbate.com/room/").unwrap();
+        let set = HeaderValue::from_static("__cf_bm=new; Domain=.chaturbate.com; Path=/; HttpOnly; Secure");
+        jar.set_cookies(&mut std::iter::once(&set), &url);
+        let h = cookie_header(&jar, "https://chaturbate.com/room/");
+        assert!(h.contains("__cf_bm=new") && !h.contains("__cf_bm=old"), "{}", h);
+        assert_eq!(h.matches("__cf_bm=").count(), 1, "{}", h);
+        assert!(h.contains("sessionid=s1"), "{}", h);
+    }
+
+    #[test]
+    fn malformed_cookie_string_is_rejected() {
+        let jar = Jar::default();
+        assert!(seed_cookie_jar(&jar, "https://chaturbate.com/", "sessionid=s1; garbage").is_err());
+    }
+
+    /// End to end against a local server: the first response sets a new __cf_bm, the
+    /// second request must carry it (and still carry the seeded session cookie).
+    #[tokio::test]
+    async fn client_sends_back_cookies_the_server_set() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for i in 0..2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let cookie = req
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("cookie:"))
+                    .unwrap_or("")
+                    .to_string();
+                seen.push(cookie);
+                let set = if i == 0 { "Set-Cookie: __cf_bm=fresh; Path=/\r\n" } else { "" };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\n{}Content-Length: 2\r\nConnection: close\r\n\r\nok",
+                    set
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+            }
+            seen
+        });
+
+        let config = NetworkConfig {
+            cookies: Some("__cf_bm=stale; sessionid=s1".to_string()),
+            domain: format!("http://{}/", addr),
+            ..NetworkConfig::default()
+        };
+        let client = ChaturbateClient::new(&config).unwrap();
+        let url = format!("http://{}/room/", addr);
+        client.get(&url).await.unwrap();
+        client.clone().get(&url).await.unwrap(); // clones share the jar
+
+        let seen = server.await.unwrap();
+        assert!(seen[0].contains("__cf_bm=stale") && seen[0].contains("sessionid=s1"), "{}", seen[0]);
+        assert!(seen[1].contains("__cf_bm=fresh") && !seen[1].contains("stale"), "{}", seen[1]);
+        assert!(seen[1].contains("sessionid=s1"), "{}", seen[1]);
     }
 }
