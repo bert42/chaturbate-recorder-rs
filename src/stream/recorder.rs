@@ -6,9 +6,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::ChaturbateClient;
 use crate::config::RecordingConfig;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::fs::generate_output_path;
-use crate::stream::discovery::resolve_segment_url;
+use crate::stream::discovery::{get_stream_info, resolve_segment_url};
 use crate::stream::segment::{download_segment_with_retry, SegmentTracker};
 use crate::stream::StreamInfo;
 
@@ -28,10 +28,14 @@ pub async fn record_stream(
 ) -> Result<RecordingStats> {
     let mut stats = RecordingStats::default();
     let mut tracker = SegmentTracker::new()?;
+    // Refreshed when the playlist URL's token expires or the stream restarts
+    let mut stream = stream_info.clone();
+    let mut refreshes: u32 = 0;
+    const MAX_REFRESHES: u32 = 3;
 
     // Create initial output file
     let (mut output_file, mut current_path) =
-        create_output_file(&stream_info.room, config, 0).await?;
+        create_output_file(&stream.room, config, 0).await?;
     stats.files_created = 1;
 
     let mut file_duration: f64 = 0.0;
@@ -56,46 +60,91 @@ pub async fn record_stream(
 
     tracing::info!(
         "Recording {} at {}p{}fps to {}",
-        stream_info.room,
-        stream_info.resolution,
-        stream_info.framerate,
+        stream.room,
+        stream.resolution,
+        stream.framerate,
         current_path.display()
     );
 
     loop {
         // Check for cancellation
         if cancel_token.is_cancelled() {
-            tracing::info!("Recording cancelled for {}", stream_info.room);
+            tracing::info!("Recording cancelled for {}", stream.room);
             break;
         }
 
         // Fetch media playlist
-        let playlist_content = match client.get(&stream_info.hls_source).await {
+        let playlist_content = match client.get(&stream.hls_source).await {
             Ok(content) => {
+                refreshes = 0;
                 if consecutive_failures > 0 {
                     tracing::info!(
                         "Playlist for {} is back after {} failed attempt(s)",
-                        stream_info.room,
+                        stream.room,
                         consecutive_failures
                     );
                 }
                 consecutive_failures = 0;
-                tracing::debug!("Playlist: {} bytes for {}", content.len(), stream_info.room);
+                tracing::debug!("Playlist: {} bytes for {}", content.len(), stream.room);
                 content
             }
             Err(e) => {
                 consecutive_failures += 1;
+
+                // The playlist URL carries a short-lived token, and a restarted broadcast gets
+                // a new stream ID. Either way the room page has the current URL.
+                let refresh_now = matches!(e, Error::CdnForbidden(_) | Error::RoomNotFound(_))
+                    || consecutive_failures >= 2;
+                if refresh_now && refreshes < MAX_REFRESHES {
+                    refreshes += 1;
+                    match get_stream_info(client, &stream.room, config.resolution, config.framerate).await {
+                        Ok(fresh) => {
+                            let same_stream = same_stream(&stream.hls_source, &fresh.hls_source);
+                            tracing::info!(
+                                "{}: playlist failed ({}), refreshed stream URL: {}",
+                                stream.room,
+                                e,
+                                if same_stream { "same stream, new token" } else { "new stream, starting a new file" }
+                            );
+                            if !same_stream {
+                                // New stream: new init segment and sequence numbers, so a new file
+                                output_file.flush().await?;
+                                file_sequence += 1;
+                                let (new_file, new_path) =
+                                    create_output_file(&stream.room, config, file_sequence).await?;
+                                output_file = new_file;
+                                current_path = new_path;
+                                file_duration = 0.0;
+                                file_size = 0;
+                                stats.files_created += 1;
+                                tracker = SegmentTracker::new()?;
+                                init_segment = None;
+                            }
+                            stream = fresh;
+                            consecutive_failures = 0;
+                            continue;
+                        }
+                        Err(Error::BroadcasterOffline(_) | Error::StreamNotFound(_) | Error::PrivateStream) => {
+                            tracing::info!("{}: stream ended (room no longer has a public stream)", stream.room);
+                            break;
+                        }
+                        Err(re) => {
+                            tracing::debug!("{}: stream URL refresh failed: {}", stream.room, re);
+                        }
+                    }
+                }
+
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     tracing::info!(
                         "Stream unavailable for {} after {} consecutive failures, stopping recording",
-                        stream_info.room,
+                        stream.room,
                         consecutive_failures
                     );
                     break;
                 }
                 log_retry(
                     consecutive_failures,
-                    &format!("Failed to fetch playlist for {}: {}", stream_info.room, e),
+                    &format!("Failed to fetch playlist for {}: {}", stream.room, e),
                 );
                 tokio::time::sleep(poll_interval).await;
                 continue;
@@ -110,14 +159,14 @@ pub async fn record_stream(
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     tracing::info!(
                         "Stream unavailable for {} after {} consecutive failures, stopping recording",
-                        stream_info.room,
+                        stream.room,
                         consecutive_failures
                     );
                     break;
                 }
                 log_retry(
                     consecutive_failures,
-                    &format!("Failed to parse media playlist for {}: {:?}", stream_info.room, e),
+                    &format!("Failed to parse media playlist for {}: {:?}", stream.room, e),
                 );
                 tokio::time::sleep(poll_interval).await;
                 continue;
@@ -126,7 +175,7 @@ pub async fn record_stream(
 
         // Check for stream end
         if playlist.end_list {
-            tracing::info!("Stream ended for {}", stream_info.room);
+            tracing::info!("Stream ended for {}", stream.room);
             break;
         }
 
@@ -139,18 +188,18 @@ pub async fn record_stream(
                 .map(|s| s.trim_matches('"').to_string());
 
             if let Some(init_uri) = map_uri {
-                match resolve_segment_url(&stream_info.hls_source, &init_uri) {
+                match resolve_segment_url(&stream.hls_source, &init_uri) {
                     Ok(init_url) => match download_segment_with_retry(client, &init_url, 3).await {
                         Ok(data) => {
-                            tracing::debug!("Init segment: {} bytes for {}", data.len(), stream_info.room);
+                            tracing::debug!("Init segment: {} bytes for {}", data.len(), stream.room);
                             output_file.write_all(&data).await?;
                             stats.bytes_written += data.len() as u64;
                             file_size += data.len() as u64;
                             init_segment = Some(data);
                         }
-                        Err(e) => tracing::warn!("Init segment failed for {}: {}", stream_info.room, e),
+                        Err(e) => tracing::warn!("Init segment failed for {}: {}", stream.room, e),
                     },
-                    Err(e) => tracing::warn!("Init URL resolve failed for {}: {}", stream_info.room, e),
+                    Err(e) => tracing::warn!("Init URL resolve failed for {}: {}", stream.room, e),
                 }
             }
         }
@@ -168,7 +217,7 @@ pub async fn record_stream(
             if let Some(seq) = tracker.extract_sequence(uri) {
                 if tracker.is_new_segment(seq) {
                     // Download segment
-                    let segment_url = resolve_segment_url(&stream_info.hls_source, uri)?;
+                    let segment_url = resolve_segment_url(&stream.hls_source, uri)?;
 
                     match download_segment_with_retry(client, &segment_url, 3).await {
                         Ok(data) => {
@@ -197,7 +246,7 @@ pub async fn record_stream(
 
                                 file_sequence += 1;
                                 let (new_file, new_path) = create_output_file(
-                                    &stream_info.room,
+                                    &stream.room,
                                     config,
                                     file_sequence,
                                 )
@@ -226,7 +275,7 @@ pub async fn record_stream(
                             tracing::warn!(
                                 "Failed to download segment {} for {}: {}",
                                 seq,
-                                stream_info.room,
+                                stream.room,
                                 e
                             );
                         }
@@ -239,7 +288,7 @@ pub async fn record_stream(
             last_progress = std::time::Instant::now();
             tracing::info!(
                 "{}: recording, {:.0} min, {:.1} MB so far ({})",
-                stream_info.room,
+                stream.room,
                 stats.duration_seconds / 60.0,
                 stats.bytes_written as f64 / 1024.0 / 1024.0,
                 current_path.display()
@@ -255,13 +304,26 @@ pub async fn record_stream(
 
     tracing::info!(
         "Recording complete for {}: {} segments, {:.2} MB, {:.0}s",
-        stream_info.room,
+        stream.room,
         stats.segments_downloaded,
         stats.bytes_written as f64 / 1024.0 / 1024.0,
         stats.duration_seconds
     );
 
     Ok(stats)
+}
+
+/// Whether two playlist URLs point at the same stream (same path; the query holds the token).
+fn same_stream(a: &str, b: &str) -> bool {
+    let path = |u: &str| reqwest::Url::parse(u).map(|u| format!("{}{}", u.host_str().unwrap_or(""), u.path()));
+    match (path(a), path(b)) {
+        (Ok(pa), Ok(pb)) => {
+            // Edge hosts (edgeNN-xxx) rotate; compare from the stream path on
+            let strip = |p: &str| p.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_default();
+            strip(&pa) == strip(&pb)
+        }
+        _ => false,
+    }
 }
 
 /// Warn on the first failure of a streak, keep retries at debug level.
@@ -313,4 +375,19 @@ async fn create_output_file(
         .await?;
 
     Ok((file, path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_stream;
+
+    #[test]
+    fn same_stream_ignores_token_and_edge() {
+        let a = "https://edge31-waw.live.mmcdn.com/v1/edge/streams/origin.r.01ABC/llhls.m3u8?token=one";
+        let b = "https://edge19-waw.live.mmcdn.com/v1/edge/streams/origin.r.01ABC/llhls.m3u8?token=two";
+        let c = "https://edge31-waw.live.mmcdn.com/v1/edge/streams/origin.r.01XYZ/llhls.m3u8?token=one";
+        assert!(same_stream(a, b));
+        assert!(!same_stream(a, c));
+        assert!(!same_stream(a, "not a url"));
+    }
 }

@@ -218,42 +218,6 @@ pub fn resolve_segment_url(playlist_url: &str, segment_uri: &str) -> Result<Stri
     resolve_url(playlist_url, segment_uri)
 }
 
-pub async fn refresh_hls_source(
-    client: &ChaturbateClient,
-    room: &str,
-    target_resolution: u32,
-    target_framerate: u32,
-) -> Result<StreamInfo> {
-    // Re-fetch room page for a fresh token
-    let html = client.get_room_page(room).await?;
-
-    let re = Regex::new(r#"window\.initialRoomDossier\s*=\s*"(.+?)""#)?;
-    let captures = re
-        .captures(&html)
-        .ok_or_else(|| Error::StreamNotFound(room.to_string()))?;
-    let encoded_json = &captures[1];
-    let json_str = decode_unicode_escapes(encoded_json)?;
-    let dossier: RoomDossier = serde_json::from_str(&json_str)?;
-    let master_url = dossier
-        .hls_source
-        .ok_or_else(|| Error::StreamNotFound(room.to_string()))?;
-
-    if master_url.is_empty() {
-        return Err(Error::BroadcasterOffline(room.to_string()));
-    }
-
-    let (playlist_url, resolution, framerate) =
-        select_variant(client, &master_url, target_resolution, target_framerate).await?;
-
-    Ok(StreamInfo {
-        hls_source: playlist_url,
-        room: room.to_string(),
-        resolution,
-        framerate,
-    })
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
